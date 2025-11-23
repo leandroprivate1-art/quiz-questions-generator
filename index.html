@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>English Class Quiz Generator</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        /* Custom scrollbar for textareas */
+        textarea::-webkit-scrollbar {
+            width: 8px;
+        }
+        textarea::-webkit-scrollbar-track {
+            background: #0f172a; 
+        }
+        textarea::-webkit-scrollbar-thumb {
+            background: #334155; 
+            border-radius: 4px;
+        }
+        textarea::-webkit-scrollbar-thumb:hover {
+            background: #475569; 
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        const QuizGenerator = () => {
+            const [transcript, setTranscript] = useState('');
+            const [output, setOutput] = useState('');
+            const [mode, setMode] = useState('cloze'); // 'cloze' (gap fill) or 'prompt' (for AI)
+            const [questionCount, setQuestionCount] = useState(10);
+            const [copied, setCopied] = useState(false);
+            const [level, setLevel] = useState('B1');
+
+            // Refresh icons whenever the component renders/updates
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            });
+
+            const placeholderText = `00:01\nThank you very much. Well, I would like to start with testicles. (Laughter)\n\n00:15\nMen who sleep five hours a night have significantly smaller testicles than those who sleep seven hours or more.\n\n00:30 - In addition, men who routinely sleep just four to five hours a night will have a level of testosterone...`;
+
+            const parseTranscript = (text) => {
+                const lines = text.split(/\r?\n/);
+                // Regex matches: start of line (ignoring whitespace), optional brackets, time, optional separator, then text
+                const regex = /^\s*(?:\[|\()?\s*(\d{1,2}:\d{2}(?::\d{2})?)(?:\]|\))?\s*(?:-|–|—|:)?\s*(.*)$/;
+                
+                const segments = [];
+                let currentSegment = null;
+
+                lines.forEach(line => {
+                    const match = line.match(regex);
+                    
+                    if (match) {
+                        const timeStr = match[1];
+                        const initialText = match[2] ? match[2].trim() : '';
+                        
+                        currentSegment = {
+                            timeStr: timeStr,
+                            seconds: timeToSeconds(timeStr),
+                            text: initialText
+                        };
+                        segments.push(currentSegment);
+                    } else {
+                        // Append text to previous segment if it's a multi-line transcript block
+                        if (currentSegment && line.trim()) {
+                            currentSegment.text = currentSegment.text 
+                                ? currentSegment.text + " " + line.trim() 
+                                : line.trim();
+                        }
+                    }
+                });
+
+                return segments.filter(item => item.text.length > 0);
+            };
+
+            const timeToSeconds = (timeStr) => {
+                const parts = timeStr.split(':').map(Number);
+                if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+                if (parts.length === 2) return parts[0] * 60 + parts[1];
+                return 0;
+            };
+
+            const generateClozeQuiz = () => {
+                const segments = parseTranscript(transcript);
+                if (segments.length === 0) {
+                    setOutput("Please paste a transcript with timestamps first.");
+                    return;
+                }
+
+                // Collect words > 3 chars for distractors
+                const allWords = segments
+                    .map(s => s.text)
+                    .join(' ')
+                    .split(/\s+/)
+                    .map(w => w.replace(/[.,?!""''()]/g, ''))
+                    .filter(w => w.length > 3);
+
+                let generatedQuiz = "";
+                
+                const selectedSegments = segments
+                    .sort(() => 0.5 - Math.random())
+                    .slice(0, Math.min(segments.length, questionCount))
+                    .sort((a, b) => a.seconds - b.seconds);
+
+                selectedSegments.forEach((seg, index) => {
+                    const words = seg.text.split(/\s+/);
+                    const targetIndices = words
+                        .map((w, i) => ({ w: w.replace(/[.,?!]/g, ''), i }))
+                        .filter(item => item.w.length > 3);
+
+                    if (targetIndices.length === 0) return;
+
+                    const targetObj = targetIndices[Math.floor(Math.random() * targetIndices.length)];
+                    const targetWordClean = targetObj.w;
+                    
+                    const sentenceWithBlank = words.map((w, i) => 
+                        i === targetObj.i ? "_______" : w
+                    ).join(' ');
+
+                    const distractors = [];
+                    while (distractors.length < 3) {
+                        if (allWords.length < 4) break;
+                        const d = allWords[Math.floor(Math.random() * allWords.length)];
+                        if (d.toLowerCase() !== targetWordClean.toLowerCase() && !distractors.includes(d)) {
+                            distractors.push(d);
+                        }
+                    }
+                    while(distractors.length < 3) distractors.push("Option");
+
+                    generatedQuiz += `? Listen and complete: "${sentenceWithBlank}" (${seg.seconds})\n`;
+                    generatedQuiz += `* ${targetWordClean}\n`;
+                    distractors.forEach(d => generatedQuiz += ` ${d}\n`);
+                    generatedQuiz += `\n`;
+                });
+
+                if (generatedQuiz === "") {
+                    setOutput("Could not identify enough words to generate questions. Ensure transcript has text.");
+                } else {
+                    setOutput(generatedQuiz);
+                }
+            };
+
+            const generateAIPrompt = () => {
+                const segments = parseTranscript(transcript);
+                if (segments.length === 0) {
+                    setOutput("Please paste a transcript with timestamps first.");
+                    return;
+                }
+
+                let prompt = `I need you to create a multiple-choice quiz for an English class (${level} Level).\n`;
+                prompt += `Based on the following transcript, generate ${questionCount} comprehension questions.\n`;
+                prompt += `\nOUTPUT FORMAT RULES:\n`;
+                prompt += `1. Use this specific format for every question:\n`;
+                prompt += `? Question text here? (timestamp_in_seconds)\n`;
+                prompt += `* Correct Answer\n`;
+                prompt += ` Wrong Answer 1\n`;
+                prompt += ` Wrong Answer 2\n`;
+                prompt += `\n2. The timestamp in parenthesis (e.g. 120) must indicate where the answer is found.\n`;
+                prompt += `3. IMPORTANT: Please add 10 seconds to the timestamp of each question (e.g. if the answer is at 00:30, write 40) to give students time to absorb the information before answering.\n`;
+                prompt += `4. Do not number the questions. Separate them with a blank line.\n`;
+                prompt += `\nTRANSCRIPT:\n`;
+
+                segments.forEach(seg => {
+                    prompt += `[${seg.seconds}] ${seg.text}\n`;
+                });
+
+                setOutput(prompt);
+            };
+
+            const handleGenerate = () => {
+                if (mode === 'cloze') {
+                    generateClozeQuiz();
+                } else {
+                    generateAIPrompt();
+                }
+            };
+
+            const copyToClipboard = () => {
+                // Using modern clipboard API with fallback
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(output);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                } else {
+                    // Fallback for older browsers or iframes
+                    const textArea = document.createElement("textarea");
+                    textArea.value = output;
+                    document.body.appendChild(textArea);
+                    textArea.select();
+                    try {
+                        document.execCommand('copy');
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 2000);
+                    } catch (err) {
+                        console.error('Fallback: Oops, unable to copy', err);
+                    }
+                    document.body.removeChild(textArea);
+                }
+            };
+
+            const handleDownload = () => {
+                if (!output) return;
+                const blob = new Blob([output], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = mode === 'cloze' ? 'english-quiz.txt' : 'quiz-prompt.txt';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+
+            return (
+                <div className="min-h-screen bg-slate-900 text-slate-100 p-4 md:p-8 font-sans">
+                    <div className="max-w-6xl mx-auto space-y-6">
+                        
+                        {/* Header */}
+                        <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-slate-700 pb-6 gap-4">
+                            <div className="flex items-center gap-3">
+                                <div className="bg-blue-600 p-3 rounded-xl shadow-lg shadow-blue-900/20">
+                                    <i data-lucide="list-music" className="w-6 h-6 text-white"></i>
+                                </div>
+                                <div>
+                                    <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
+                                        Video Quiz Generator
+                                    </h1>
+                                    <p className="text-slate-400 text-sm">Convert transcripts into English exercises instantly</p>
+                                </div>
+                            </div>
+                            
+                            <div className="flex items-center gap-3 bg-slate-800 p-1.5 rounded-lg border border-slate-700">
+                                <button
+                                    onClick={() => setMode('cloze')}
+                                    className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                                        mode === 'cloze' 
+                                        ? 'bg-blue-600 text-white shadow-md' 
+                                        : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                                    }`}
+                                >
+                                    <i data-lucide="refresh-cw" className="w-4 h-4"></i>
+                                    Auto Gap-Fill
+                                </button>
+                                <button
+                                    onClick={() => setMode('prompt')}
+                                    className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                                        mode === 'prompt' 
+                                        ? 'bg-emerald-600 text-white shadow-md' 
+                                        : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                                    }`}
+                                >
+                                    <i data-lucide="brain-circuit" className="w-4 h-4"></i>
+                                    AI Prompt Builder
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            
+                            {/* Input Section */}
+                            <div className="bg-slate-800 rounded-xl border border-slate-700 shadow-xl overflow-hidden flex flex-col h-[600px]">
+                                <div className="p-4 bg-slate-800/50 border-b border-slate-700 flex justify-between items-center">
+                                    <h2 className="font-semibold flex items-center gap-2 text-slate-200">
+                                        <i data-lucide="file-text" className="w-4 h-4 text-blue-400"></i>
+                                        Input Transcript
+                                    </h2>
+                                    <button 
+                                        onClick={() => setTranscript('')}
+                                        className="text-xs text-slate-400 hover:text-red-400 flex items-center gap-1 transition-colors"
+                                    >
+                                        <i data-lucide="eraser" className="w-3 h-3"></i> Clear
+                                    </button>
+                                </div>
+                                
+                                <textarea
+                                    value={transcript}
+                                    onChange={(e) => setTranscript(e.target.value)}
+                                    placeholder={placeholderText}
+                                    className="flex-1 w-full bg-slate-900 p-4 text-sm font-mono text-slate-300 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                                    spellCheck="false"
+                                ></textarea>
+                                
+                                <div className="p-4 bg-slate-800 border-t border-slate-700 space-y-4">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-xs font-medium text-slate-400 mb-1">Max Questions</label>
+                                            <input 
+                                                type="number" 
+                                                min="1" 
+                                                max="50" 
+                                                value={questionCount}
+                                                onChange={(e) => setQuestionCount(parseInt(e.target.value) || 10)}
+                                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 outline-none text-white"
+                                            />
+                                        </div>
+                                        {mode === 'prompt' && (
+                                            <div>
+                                                <label className="block text-xs font-medium text-slate-400 mb-1">Difficulty Level</label>
+                                                <select 
+                                                    value={level}
+                                                    onChange={(e) => setLevel(e.target.value)}
+                                                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 outline-none text-white"
+                                                >
+                                                    <option value="A2">A2 (Elementary)</option>
+                                                    <option value="B1">B1 (Intermediate)</option>
+                                                    <option value="B2">B2 (Upper Intermediate)</option>
+                                                    <option value="C1">C1 (Advanced)</option>
+                                                </select>
+                                            </div>
+                                        )}
+                                    </div>
+                                    
+                                    <button
+                                        onClick={handleGenerate}
+                                        className={`w-full py-3 rounded-lg font-bold text-white shadow-lg transition-all transform hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2 ${
+                                            mode === 'cloze' 
+                                            ? 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/20' 
+                                            : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-900/20'
+                                        }`}
+                                    >
+                                        {mode === 'cloze' 
+                                            ? <i data-lucide="play-circle" className="w-5 h-5"></i> 
+                                            : <i data-lucide="brain-circuit" className="w-5 h-5"></i>
+                                        }
+                                        {mode === 'cloze' ? 'Generate Quiz Instantly' : 'Generate AI Prompt'}
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Output Section */}
+                            <div className="bg-slate-800 rounded-xl border border-slate-700 shadow-xl overflow-hidden flex flex-col h-[600px]">
+                                <div className="p-4 bg-slate-800/50 border-b border-slate-700 flex justify-between items-center">
+                                    <h2 className="font-semibold flex items-center gap-2 text-slate-200">
+                                        <i data-lucide="settings" className="w-4 h-4 text-emerald-400"></i>
+                                        {mode === 'cloze' ? 'Generated Quiz' : 'Prompt for AI'}
+                                    </h2>
+                                    <div className="flex gap-2">
+                                        <button 
+                                            onClick={handleDownload}
+                                            disabled={!output}
+                                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            <i data-lucide="download" className="w-3.5 h-3.5"></i>
+                                            Save .txt
+                                        </button>
+                                        <button 
+                                            onClick={copyToClipboard}
+                                            disabled={!output}
+                                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                                                copied 
+                                                ? 'bg-green-500/20 text-green-400 border border-green-500/30' 
+                                                : 'bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600'
+                                            }`}
+                                        >
+                                            {copied 
+                                                ? <i data-lucide="check" className="w-3.5 h-3.5"></i> 
+                                                : <i data-lucide="copy" className="w-3.5 h-3.5"></i>
+                                            }
+                                            {copied ? 'Copied!' : 'Copy Text'}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="flex-1 relative bg-slate-900">
+                                    <textarea
+                                        value={output}
+                                        readOnly
+                                        placeholder={mode === 'cloze' ? "Quiz will appear here..." : "Prompt will appear here..."}
+                                        className="absolute inset-0 w-full h-full p-4 text-sm font-mono text-slate-300 resize-none focus:outline-none bg-transparent"
+                                    ></textarea>
+                                </div>
+                                
+                                <div className="p-3 bg-slate-800/80 border-t border-slate-700 text-xs text-slate-500 flex justify-between items-center">
+                                    <span>
+                                        {mode === 'cloze' 
+                                            ? 'Tip: Paste output into any quiz tool or LMS.' 
+                                            : 'Tip: Paste this prompt into Gemini or ChatGPT.'}
+                                    </span>
+                                    <span>{output ? output.split('\n').length : 0} lines</span>
+                                </div>
+                            </div>
+
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<QuizGenerator />);
+    </script>
+</body>
+</html>
